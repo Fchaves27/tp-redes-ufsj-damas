@@ -1,0 +1,14 @@
+# Java / NetBeans
+**/build/
+**/dist/
+**/nbproject/private/
+*.class
+*.jar
+
+# IDEs
+.idea/
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+*:Zone.Identifier
