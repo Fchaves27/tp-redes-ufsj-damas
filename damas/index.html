@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Damas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Gloock&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+<main>
+  <h1>Damas</h1>
+  <p id="status" role="status" aria-live="polite"></p>
+  <div class="wrap">
+    <div class="player" id="pb"><span class="piece b mini"></span><span class="name"></span><span class="n"></span></div>
+    <div class="board" id="board" style="margin:8px 0"></div>
+    <div class="player" id="pw"><span class="piece w mini"></span><span class="name"></span><span class="n"></span></div>
+  </div>
+  <div class="controls">
+    <div class="seg" role="group" aria-label="Modo de jogo">
+      <button class="opt" data-mode="pc" aria-pressed="true">Contra o computador</button>
+      <button class="opt" data-mode="2p" aria-pressed="false">2 jogadores</button>
+    </div>
+    <button class="new" id="newBtn">Novo jogo</button>
+  </div>
+  <p class="rules">Toque numa peça e depois no destino. A captura é obrigatória e vale a sequência que come mais peças. Peças comuns capturam para trás; a dama anda e captura à distância.</p>
+</main>
+<script>
+const DIRS=[[-1,-1],[-1,1],[1,-1],[1,1]];
+const $=id=>document.getElementById(id);
+const inb=(r,c)=>r>=0&&r<8&&c>=0&&c<8;
+const eq=(a,b)=>a[0]===b[0]&&a[1]===b[1];
+const opp=p=>p==='w'?'b':'w';
+let board,turn,sel,moves,mode='pc',over,nonProg,busy,last,gid=0;
+
+function jump(b,x,r,c,from,path,cp,done,out){
+  let any=false;
+  for(const [dr,dc] of DIRS){
+    let y=r+dr,z=c+dc;
+    if(x.k) while(inb(y,z)&&!b[y][z]){y+=dr;z+=dc}
+    if(!inb(y,z)) continue;
+    const t=b[y][z],key=y*8+z;
+    if(!t||t.p===x.p||done.has(key)) continue;
+    let ly=y+dr,lz=z+dc;const lands=[];
+    while(inb(ly,lz)&&!b[ly][lz]){lands.push([ly,lz]);if(!x.k)break;ly+=dr;lz+=dc}
+    for(const l of lands){any=true;done.add(key);jump(b,x,l[0],l[1],from,[...path,l],[...cp,[y,z]],done,out);done.delete(key)}
+  }
+  if(!any&&path.length) out.push({from,path,caps:cp});
+}
+function legal(b,p){
+  const caps=[],simple=[];
+  for(let r=0;r<8;r++)for(let c=0;c<8;c++){
+    const x=b[r][c];if(!x||x.p!==p) continue;
+    b[r][c]=null;jump(b,x,r,c,[r,c],[],[],new Set(),caps);b[r][c]=x;
+    for(const [dr,dc] of DIRS){
+      if(!x.k&&dr!==(p==='w'?-1:1)) continue;
+      let y=r+dr,z=c+dc;
+      while(inb(y,z)&&!b[y][z]){simple.push({from:[r,c],path:[[y,z]],caps:[null]});if(!x.k)break;y+=dr;z+=dc}
+    }
+  }
+  if(caps.length){const m=Math.max(...caps.map(s=>s.path.length));return caps.filter(s=>s.path.length===m)}
+  return simple;
+}
+function step(b,m,i){
+  const [r,c]=i?m.path[i-1]:m.from,x=b[r][c];
+  b[r][c]=null;b[m.path[i][0]][m.path[i][1]]=x;
+  if(m.caps[i]) b[m.caps[i][0]][m.caps[i][1]]=null;
+}
+function finish(b,m){
+  const [y,z]=m.path[m.path.length-1],x=b[y][z];
+  if(!x.k&&y===(x.p==='w'?0:7)) x.k=true;
+}
+const clone=b=>b.map(row=>row.map(x=>x&&{...x}));
+
+function init(){
+  board=Array.from({length:8},(_,r)=>Array.from({length:8},(_,c)=>
+    (r+c)%2===1&&r<3?{p:'b',k:false}:(r+c)%2===1&&r>4?{p:'w',k:false}:null));
+  gid++;turn='w';nonProg=0;over=null;sel=null;busy=false;last=null;
+  moves=legal(board,turn);render();
+}
+function endTurn(m){
+  const [y,z]=m.path[m.path.length-1],wasKing=board[y][z].k,took=m.caps.some(Boolean);
+  finish(board,m);
+  nonProg=(wasKing&&!took)?nonProg+1:0;
+  last=[m.from,[y,z]];sel=null;turn=opp(turn);moves=legal(board,turn);
+  if(!moves.length) over=opp(turn);
+  else if(nonProg>=40) over='draw';
+  render();maybeAI();
+}
+function aiPick(){
+  let best=-1e9,pick=null;
+  for(const m of legal(board,turn)){
+    const b=clone(board);
+    for(let i=0;i<m.path.length;i++) step(b,m,i);
+    finish(b,m);
+    const [y,z]=m.path[m.path.length-1],x=b[y][z];
+    let s=m.caps.filter(Boolean).length*10;
+    if(x.k&&!board[m.from[0]][m.from[1]].k) s+=6;
+    const re=legal(b,opp(turn));
+    if(re.length&&re[0].caps[0]) s-=re[0].path.length*9;
+    s+=Math.random()*3+(x.k?0:(turn==='b'?y:7-y)*.3);
+    if(s>best){best=s;pick=m}
+  }
+  return pick;
+}
+function maybeAI(){
+  if(mode!=='pc'||turn!=='b'||over) return;
+  busy=true;render();const g=gid;
+  setTimeout(()=>{
+    if(g!==gid) return;
+    const m=aiPick();let i=0;
+    const t=()=>{if(g!==gid) return;step(board,m,i);i++;render();
+      if(i<m.path.length) setTimeout(t,380);else{busy=false;endTurn(m)}};
+    t();
+  },550);
+}
+function click(r,c){
+  if(over||busy||(mode==='pc'&&turn==='b')) return;
+  const cand=sel?sel.list.filter(m=>eq(m.path[sel.i],[r,c])):[];
+  if(cand.length){
+    const i=sel.i;
+    step(board,cand[0],i);
+    sel={list:cand,i:i+1,cur:[r,c]};
+    if(cand.every(m=>m.path.length===i+1)) endTurn(cand[0]);else render();
+    return;
+  }
+  if(sel&&sel.i>0) return;
+  const x=board[r][c];
+  if(x&&x.p===turn){
+    const list=moves.filter(m=>eq(m.from,[r,c]));
+    sel=list.length?{list,i:0,cur:[r,c]}:null;
+  }else sel=null;
+  render();
+}
+function render(){
+  const canSet=new Set(),dest=new Set();
+  if(!sel&&!over&&!busy&&!(mode==='pc'&&turn==='b')) moves.forEach(m=>canSet.add(m.from[0]*8+m.from[1]));
+  if(sel) sel.list.forEach(m=>dest.add(m.path[sel.i][0]*8+m.path[sel.i][1]));
+  let h='',cw=0,cb=0;
+  for(let r=0;r<8;r++)for(let c=0;c<8;c++){
+    if((r+c)%2===0){h+='<div class="sq light"></div>';continue}
+    const x=board[r][c],k=r*8+c;
+    if(x) x.p==='w'?cw++:cb++;
+    const cls='sq dark'+(dest.has(k)?' dest':'')+(canSet.has(k)?' can':'')+(sel&&eq(sel.cur,[r,c])?' sel':'')+(last&&(eq(last[0],[r,c])||eq(last[1],[r,c]))?' last':'');
+    const lab='Linha '+(8-r)+', coluna '+'abcdefgh'[c]+(x?', peça '+(x.p==='w'?'branca':'preta')+(x.k?' (dama)':''):', vazia');
+    h+=`<button class="${cls}" data-r="${r}" data-c="${c}" aria-label="${lab}">${x?`<span class="piece ${x.p}${x.k?' k':''}"></span>`:''}</button>`;
+  }
+  $('board').innerHTML=h;
+  const pc=mode==='pc';
+  $('pb').querySelector('.name').textContent=pc?'Pretas (computador)':'Pretas';
+  $('pw').querySelector('.name').textContent=pc?'Brancas (você)':'Brancas';
+  $('pb').querySelector('.n').textContent=cb;$('pw').querySelector('.n').textContent=cw;
+  $('pb').classList.toggle('on',!over&&turn==='b');$('pw').classList.toggle('on',!over&&turn==='w');
+  let s;
+  if(over==='draw') s='Empate: 20 lances só com damas, sem captura.';
+  else if(over) s=pc?(over==='w'?'Você venceu!':'O computador venceu.'):(over==='w'?'Brancas venceram!':'Pretas venceram!');
+  else if(pc&&turn==='b') s='O computador está jogando…';
+  else if(sel&&sel.i>0) s='Continue a captura.';
+  else s=(pc?'Sua vez':'Vez das '+(turn==='w'?'brancas':'pretas'))+(moves[0]&&moves[0].caps[0]?'. Captura obrigatória.':'.');
+  $('status').textContent=s;
+  $('newBtn').classList.toggle('hot',!!over);
+}
+$('board').addEventListener('click',e=>{
+  const b=e.target.closest('button.sq');
+  if(b) click(+b.dataset.r,+b.dataset.c);
+});
+$('newBtn').addEventListener('click',()=>{busy=false;init()});
+document.querySelectorAll('.opt').forEach(b=>b.addEventListener('click',()=>{
+  mode=b.dataset.mode;
+  document.querySelectorAll('.opt').forEach(o=>o.setAttribute('aria-pressed',o===b));
+  init();
+}));
+init();
+</script>
+</body>
+</html>
