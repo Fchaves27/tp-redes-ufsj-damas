@@ -1,0 +1,31 @@
+<project name="pitiupi.damas" default="jar">
+    <property name="build.dir" value="build"/>
+    <property name="classes.dir" value="${build.dir}/classes"/>
+    <property name="dist.dir" value="dist"/>
+    <property name="core.jar" value="../pitiupi/dist/pitiupi.jar"/>
+
+    <target name="clean">
+        <delete dir="${build.dir}"/>
+        <delete dir="${dist.dir}"/>
+    </target>
+
+    <target name="jar">
+        <mkdir dir="${classes.dir}"/>
+        <mkdir dir="${dist.dir}"/>
+        <javac srcdir="src" destdir="${classes.dir}" source="17" target="17"
+               encoding="UTF-8" includeantruntime="false">
+            <classpath>
+                <pathelement location="${core.jar}"/>
+            </classpath>
+        </javac>
+        <copy todir="${classes.dir}">
+            <fileset dir="src">
+                <exclude name="**/*.java"/>
+            </fileset>
+        </copy>
+        <mkdir dir="${classes.dir}/web"/>
+        <copy file="../../damas/index.html" tofile="${classes.dir}/web/index.html"/>
+        <copy file="../../damas/estilo.css" tofile="${classes.dir}/web/estilo.css"/>
+        <jar destfile="${dist.dir}/pitiupi.damas.jar" basedir="${classes.dir}"/>
+    </target>
+</project>

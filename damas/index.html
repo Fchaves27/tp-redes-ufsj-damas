@@ -22,9 +22,17 @@
     <div class="seg" role="group" aria-label="Modo de jogo">
       <button class="opt" data-mode="pc" aria-pressed="true">Contra o computador</button>
       <button class="opt" data-mode="2p" aria-pressed="false">2 jogadores</button>
+      <button class="opt" data-mode="online" aria-pressed="false">Online Pitiupi</button>
     </div>
     <button class="new" id="newBtn">Novo jogo</button>
   </div>
+  <section class="online-controls" id="onlineControls" hidden aria-label="Partida online">
+    <button class="new" id="createRoomBtn">Criar sala</button>
+    <label for="roomCode">Código da sala</label>
+    <input id="roomCode" maxlength="12" autocomplete="off" spellcheck="false" aria-label="Código da sala">
+    <button class="new" id="joinRoomBtn">Entrar</button>
+    <p id="networkStatus" role="status" aria-live="polite">Conectando ao Pitiupi local…</p>
+  </section>
   <p class="rules">Toque numa peça e depois no destino. A captura é obrigatória e vale a sequência que come mais peças. Peças comuns capturam para trás; a dama anda e captura à distância.</p>
 </main>
 <script>
@@ -34,6 +42,9 @@ const inb=(r,c)=>r>=0&&r<8&&c>=0&&c<8;
 const eq=(a,b)=>a[0]===b[0]&&a[1]===b[1];
 const opp=p=>p==='w'?'b':'w';
 let board,turn,sel,moves,mode='pc',over,nonProg,busy,last,gid=0;
+let localPlayer=null,roomId=null,opponentName='',inviteText='';
+let bridgeSocket=null;
+const networkStatus=$('networkStatus');
 
 function jump(b,x,r,c,from,path,cp,done,out){
   let any=false;
@@ -80,14 +91,16 @@ function init(){
   gid++;turn='w';nonProg=0;over=null;sel=null;busy=false;last=null;
   moves=legal(board,turn);render();
 }
-function endTurn(m){
+function endTurn(m,remote=false){
   const [y,z]=m.path[m.path.length-1],wasKing=board[y][z].k,took=m.caps.some(Boolean);
   finish(board,m);
   nonProg=(wasKing&&!took)?nonProg+1:0;
   last=[m.from,[y,z]];sel=null;turn=opp(turn);moves=legal(board,turn);
   if(!moves.length) over=opp(turn);
   else if(nonProg>=40) over='draw';
-  render();maybeAI();
+  render();
+  if(mode==='online'&&!remote) sendMove(m);
+  maybeAI();
 }
 function aiPick(){
   let best=-1e9,pick=null;
@@ -117,7 +130,7 @@ function maybeAI(){
   },550);
 }
 function click(r,c){
-  if(over||busy||(mode==='pc'&&turn==='b')) return;
+  if(over||busy||(mode==='pc'&&turn==='b')||(mode==='online'&&(!localPlayer||turn!==localPlayer))) return;
   const cand=sel?sel.list.filter(m=>eq(m.path[sel.i],[r,c])):[];
   if(cand.length){
     const i=sel.i;
@@ -136,7 +149,7 @@ function click(r,c){
 }
 function render(){
   const canSet=new Set(),dest=new Set();
-  if(!sel&&!over&&!busy&&!(mode==='pc'&&turn==='b')) moves.forEach(m=>canSet.add(m.from[0]*8+m.from[1]));
+  if(!sel&&!over&&!busy&&!(mode==='pc'&&turn==='b')&&!(mode==='online'&&(!localPlayer||turn!==localPlayer))) moves.forEach(m=>canSet.add(m.from[0]*8+m.from[1]));
   if(sel) sel.list.forEach(m=>dest.add(m.path[sel.i][0]*8+m.path[sel.i][1]));
   let h='',cw=0,cb=0;
   for(let r=0;r<8;r++)for(let c=0;c<8;c++){
@@ -148,30 +161,135 @@ function render(){
     h+=`<button class="${cls}" data-r="${r}" data-c="${c}" aria-label="${lab}">${x?`<span class="piece ${x.p}${x.k?' k':''}"></span>`:''}</button>`;
   }
   $('board').innerHTML=h;
-  const pc=mode==='pc';
-  $('pb').querySelector('.name').textContent=pc?'Pretas (computador)':'Pretas';
-  $('pw').querySelector('.name').textContent=pc?'Brancas (você)':'Brancas';
+  const pc=mode==='pc',online=mode==='online';
+  $('pb').querySelector('.name').textContent=pc?'Pretas (computador)':online?(localPlayer==='b'?'Pretas (você)':localPlayer==='w'?'Pretas ('+opponentName+')':'Pretas'):'Pretas';
+  $('pw').querySelector('.name').textContent=pc?'Brancas (você)':online?(localPlayer==='w'?'Brancas (você)':localPlayer==='b'?'Brancas ('+opponentName+')':'Brancas'):'Brancas';
   $('pb').querySelector('.n').textContent=cb;$('pw').querySelector('.n').textContent=cw;
   $('pb').classList.toggle('on',!over&&turn==='b');$('pw').classList.toggle('on',!over&&turn==='w');
   let s;
   if(over==='draw') s='Empate: 20 lances só com damas, sem captura.';
-  else if(over) s=pc?(over==='w'?'Você venceu!':'O computador venceu.'):(over==='w'?'Brancas venceram!':'Pretas venceram!');
+  else if(over) s=online?(over===localPlayer?'Você venceu!':'Seu oponente venceu.'):pc?(over==='w'?'Você venceu!':'O computador venceu.'):(over==='w'?'Brancas venceram!':'Pretas venceram!');
+  else if(online&&!roomId) s=inviteText||'Crie uma sala ou informe o código recebido.';
+  else if(online&&!localPlayer) s='Aguardando outro jogador…';
+  else if(online&&turn!==localPlayer) s='Aguardando a jogada de '+(turn==='w'?'brancas':'pretas')+'…';
   else if(pc&&turn==='b') s='O computador está jogando…';
   else if(sel&&sel.i>0) s='Continue a captura.';
   else s=(pc?'Sua vez':'Vez das '+(turn==='w'?'brancas':'pretas'))+(moves[0]&&moves[0].caps[0]?'. Captura obrigatória.':'.');
   $('status').textContent=s;
   $('newBtn').classList.toggle('hot',!!over);
+  $('onlineControls').hidden=!online;
+  document.querySelectorAll('.opt').forEach(button=>{button.disabled=!!roomId});
+  $('createRoomBtn').disabled=!!roomId;
+  $('joinRoomBtn').disabled=!!roomId;
+  $('roomCode').disabled=!!roomId;
 }
 $('board').addEventListener('click',e=>{
   const b=e.target.closest('button.sq');
   if(b) click(+b.dataset.r,+b.dataset.c);
 });
-$('newBtn').addEventListener('click',()=>{busy=false;init()});
+$('newBtn').addEventListener('click',()=>{
+  if(mode==='online'&&roomId){
+    sendBridge('RESET|'+roomId);
+    return;
+  }
+  busy=false;init();
+});
 document.querySelectorAll('.opt').forEach(b=>b.addEventListener('click',()=>{
+  if(roomId) return;
   mode=b.dataset.mode;
+  localPlayer=null;inviteText='';
   document.querySelectorAll('.opt').forEach(o=>o.setAttribute('aria-pressed',o===b));
   init();
 }));
+function sendBridge(message){
+  if(!bridgeSocket||bridgeSocket.readyState!==WebSocket.OPEN){
+    networkStatus.textContent='Sem conexão com o Pitiupi local. Abra o jogo pelo menu do Pitiupi.';
+    return false;
+  }
+  bridgeSocket.send(message);
+  return true;
+}
+function selectOnlineMode(){
+  mode='online';localPlayer=null;
+  document.querySelectorAll('.opt').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.mode==='online')));
+  init();
+}
+function createRoom(){
+  selectOnlineMode();
+  const bytes=crypto.getRandomValues(new Uint8Array(6));
+  const code=Array.from(bytes,value=>'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[value%32]).join('');
+  if(sendBridge('CREATE|'+code)){
+    roomId=code;$('roomCode').value=code;inviteText='';render();
+  }
+}
+function joinRoom(){
+  selectOnlineMode();
+  const code=$('roomCode').value.trim().toUpperCase();
+  if(!/^[A-Z0-9]{6,12}$/.test(code)){
+    networkStatus.textContent='Informe um código válido (6 a 12 letras ou números).';return;
+  }
+  if(sendBridge('JOIN|'+code)){
+    roomId=code;inviteText='';render();
+  }
+}
+function sendMove(m){
+  if(!roomId) return;
+  const from=m.from.join(',');
+  const path=m.path.map(position=>position.join(',')).join(';');
+  sendBridge('MOVE|'+roomId+'|'+from+'|'+path);
+}
+function receiveMove(fields){
+  if(mode!=='online'||fields.length!==4||fields[1]!==roomId) return;
+  const from=fields[2].split(',').map(Number);
+  const path=fields[3].split(';').map(point=>point.split(',').map(Number));
+  const move=moves.find(candidate=>eq(candidate.from,from)&&candidate.path.length===path.length&&candidate.path.every((point,index)=>eq(point,path[index])));
+  if(!move){networkStatus.textContent='Jogada recebida inválida; partida sincronizada não foi alterada.';return}
+  for(let index=0;index<move.path.length;index++) step(board,move,index);
+  endTurn(move,true);
+}
+function handleBridgeMessage(message){
+  const fields=message.split('|');
+  if(fields[0]==='CONNECTED'){
+    networkStatus.textContent='Conectado ao Pitiupi local.';
+  }else if(fields[0]==='STATUS'){
+    networkStatus.textContent=fields.slice(1).join('|');
+  }else if(fields[0]==='ERROR'){
+    networkStatus.textContent=fields.slice(1).join('|');
+  }else if(fields[0]==='INVITE'&&fields.length>=3&&!roomId){
+    inviteText='Convite de '+fields.slice(2).join('|')+'. Digite ou confirme o código para entrar.';
+    $('roomCode').value=fields[1];selectOnlineMode();
+  }else if(fields[0]==='START'&&fields.length>=4&&fields[1]===roomId){
+    localPlayer=fields[2];opponentName=fields.slice(3).join('|');
+    turn='w';moves=legal(board,turn);sel=null;over=null;busy=false;last=null;render();
+    networkStatus.textContent='Partida online contra '+opponentName+'.';
+  }else if(fields[0]==='MOVE'){
+    receiveMove(fields);
+  }else if(fields[0]==='RESET'&&fields[1]===roomId){
+    init();networkStatus.textContent='A partida foi reiniciada.';
+  }
+}
+function connectBridge(){
+  if(!location.host){
+    networkStatus.textContent='Para jogar online, abra esta página pelo menu do Pitiupi.';
+    return;
+  }
+  const protocol=location.protocol==='https:'?'wss:':'ws:';
+  try{
+    bridgeSocket=new WebSocket(protocol+'//'+location.host+'/ws');
+  }catch(error){
+    networkStatus.textContent='Não foi possível conectar ao Pitiupi local.';
+    return;
+  }
+  bridgeSocket.onmessage=event=>handleBridgeMessage(event.data);
+  bridgeSocket.onclose=()=>{
+    networkStatus.textContent='Conexão com o Pitiupi interrompida. Tentando reconectar…';
+    setTimeout(connectBridge,2000);
+  };
+  bridgeSocket.onerror=()=>networkStatus.textContent='Não foi possível conectar ao Pitiupi local.';
+}
+$('createRoomBtn').addEventListener('click',createRoom);
+$('joinRoomBtn').addEventListener('click',joinRoom);
+connectBridge();
 init();
 </script>
 </body>
